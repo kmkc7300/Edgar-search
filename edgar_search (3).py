@@ -1,3 +1,4 @@
+
 import streamlit as st
 import requests
 import yfinance as yf
@@ -315,7 +316,7 @@ if run:
 
             time.sleep(0.3)  # be polite to SEC
 
-        progress.progress(1.0, text=f"Done — fetched {len(all_hits)} filings from EDGAR (total available: {total_available:,})")
+        progress.progress(1.0, text=f"Done — fetched {len(all_hits)} filings from EDGAR (total available: {total_available:,})" if total_available is not None else f"Done — fetched {len(all_hits)} filings from EDGAR")
 
         if debug_mode and all_hits:
             st.subheader("First raw hit")
