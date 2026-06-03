@@ -505,13 +505,13 @@ if run:
                 m4.metric("Unique Sectors", len(set(r["Sector"] for r in results if r["Sector"] != "N/A")))
 
                 df = pd.DataFrame(results)[[
-                    "Company", "Ticker", "Location", "Sector", "Industry",
-                    "Market Cap", "CFO", "Phone", "EDGAR Page", "LinkedIn",
-                    "Filing Type", "Filing Date", "Mentions", "Filing URL"
+                    "Company", "Ticker", "Sector", "Industry",
+                    "Market Cap", "CFO", "Phone", "LinkedIn",
+                    "Mentions", "Filing URL"
                 ]]
 
                 df_display = df.copy()
-                for col, label in [("Filing URL", "View"), ("EDGAR Page", "Company"), ("LinkedIn", "Search")]:
+                for col, label in [("Filing URL", "View"), ("LinkedIn", "Search")]:
                     df_display[col] = df_display[col].apply(
                         lambda x, l=label: f'<a href="{x}" target="_blank">{l}</a>' if x not in ("N/A", "") else "N/A"
                     )
