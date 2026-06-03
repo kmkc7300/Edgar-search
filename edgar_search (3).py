@@ -479,7 +479,6 @@ if run:
                             results[i]["Mentions"] = count
                             results[i]["CFO"] = cfo_name or "N/A"
                             results[i]["Phone"] = phone or "N/A"
-                            results[i]["Website"] = website or "N/A"
                             results[i]["LinkedIn"] = linkedin or "N/A"
 
                 if errors:
