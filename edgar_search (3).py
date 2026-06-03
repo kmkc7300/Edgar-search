@@ -414,21 +414,23 @@ if run:
             with st.spinner("Fetching filing data, CFO info and contact details..."):
                 kw_clean = keyword.strip('"').strip("\'")
 
-                def _fetch(r):
-                    src = r.get("_raw_src", {})
-                    edgar_id = r.get("_edgar_id", "")
-                    ciks = src.get("ciks", [])
-                    cik = str(ciks[0]).lstrip("0") if ciks else ""
-                    count, cfo_name, _ = fetch_filing_data(edgar_id, cik, kw_clean)
-                    phone, website = fetch_company_info(ciks[0] if ciks else "")
-                    # Build LinkedIn search URL for CFO
-                    company = r.get("Company", "")
-                    if cfo_name and company:
-                        li_query = (cfo_name + " " + company).replace(" ", "+")
-                        linkedin = f"https://www.linkedin.com/search/results/people/?keywords={li_query}"
-                    else:
-                        linkedin = ""
-                    return count, cfo_name, phone, website, linkedin
+                def _fetch(r, _kw=kw_clean):
+                    try:
+                        src = r.get("_raw_src", {})
+                        edgar_id = r.get("_edgar_id", "")
+                        ciks = src.get("ciks", [])
+                        cik = str(ciks[0]).lstrip("0") if ciks else ""
+                        count, cfo_name, _ = fetch_filing_data(edgar_id, cik, _kw)
+                        phone, website = fetch_company_info(ciks[0] if ciks else "")
+                        company = r.get("Company", "")
+                        if cfo_name and company:
+                            li_query = (cfo_name + " " + company).replace(" ", "+")
+                            linkedin = f"https://www.linkedin.com/search/results/people/?keywords={li_query}"
+                        else:
+                            linkedin = ""
+                        return count, cfo_name, phone, website, linkedin
+                    except Exception:
+                        return 0, "", "", "", ""
 
                 with ThreadPoolExecutor(max_workers=6) as ex:
                     futures = {ex.submit(_fetch, r): i for i, r in enumerate(results)}
