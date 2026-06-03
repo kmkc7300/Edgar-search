@@ -252,10 +252,8 @@ def fetch_mention_count(edgar_id, cik, keyword, timeout=10):
         acc_clean = adsh.replace("-", "")
 
         if filename:
-            # Direct document URL — most reliable
             doc_url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{acc_clean}/{filename}"
         else:
-            # Fall back to index page parsing
             index_url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{acc_clean}/{adsh}-index.htm"
             r = requests.get(index_url, headers={"User-Agent": "KiloCapital research@kilocapital.com"}, timeout=timeout)
             if not r.ok:
@@ -269,18 +267,21 @@ def fetch_mention_count(edgar_id, cik, keyword, timeout=10):
         dr = requests.get(doc_url, headers={"User-Agent": "KiloCapital research@kilocapital.com"}, timeout=timeout, stream=True)
         if not dr.ok:
             return None
-        # Read up to 3MB
+        # Read up to 5MB
         chunks = []
         size = 0
         for chunk in dr.iter_content(chunk_size=65536):
             chunks.append(chunk)
             size += len(chunk)
-            if size > 3_000_000:
+            if size > 5_000_000:
                 break
-        text = b"".join(chunks).decode("utf-8", errors="ignore")
-        text = re.sub(r"<[^>]+>", " ", text).lower()
-        text = re.sub(r"\s+", " ", text)
-        kw = keyword.strip('"').lower()
+        raw = b"".join(chunks).decode("utf-8", errors="ignore")
+        # Strip HTML tags, replace with space to avoid joining words
+        text = re.sub(r"<[^>]+>", " ", raw)
+        # Normalize all whitespace (tabs, newlines, multiple spaces) to single space
+        text = " ".join(text.split()).lower()
+        # Clean keyword — strip surrounding quotes, lowercase
+        kw = keyword.strip().strip('"').strip("'").lower()
         return text.count(kw)
     except Exception:
         return None
