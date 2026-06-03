@@ -213,11 +213,8 @@ def parse_hit(h):
         highlight.get("entity_name") or
         []
     )
-    if snippet_parts:
-        raw = " ... ".join(snippet_parts[:3])
-        snippet = re.sub(r'<[^>]+>', '', raw).strip()[:400]
-    else:
-        snippet = src.get("file_description", "") or ""
+    # Use highlight fragment count as lower-bound mention estimate
+    mention_count = len(snippet_parts) if snippet_parts else 0
 
     location = (src.get("biz_locations") or [""])[0]
 
@@ -229,12 +226,48 @@ def parse_hit(h):
         "Industry": sic_industry,
         "Filing Type": form,
         "Filing Date": filed,
-        "Snippet": snippet,
+        "Mentions": mention_count,
         "Filing URL": filing_url,
         "_mcap_raw": None,
         "Market Cap": "N/A",
         "_raw_src": src,
     }
+
+
+def fetch_mention_count(adsh, cik, keyword, timeout=8):
+    """Fetch filing text and count exact keyword occurrences."""
+    try:
+        if not adsh or not cik:
+            return None
+        acc_clean = adsh.replace("-", "")
+        index_url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{acc_clean}/{adsh}-index.htm"
+        r = requests.get(index_url, headers={"User-Agent": "KiloCapital research@kilocapital.com"}, timeout=timeout)
+        if not r.ok:
+            return None
+        # Find primary document (not exhibits)
+        links = re.findall(r'href="(/Archives/edgar/data/[^"]+\.htm)"', r.text, re.IGNORECASE)
+        doc_links = [l for l in links if not l.endswith("-index.htm")]
+        if not doc_links:
+            return None
+        doc_url = "https://www.sec.gov" + doc_links[0]
+        dr = requests.get(doc_url, headers={"User-Agent": "KiloCapital research@kilocapital.com"}, timeout=timeout, stream=True)
+        if not dr.ok:
+            return None
+        # Read up to 2MB to keep it fast
+        chunks = []
+        size = 0
+        for chunk in dr.iter_content(chunk_size=65536):
+            chunks.append(chunk)
+            size += len(chunk)
+            if size > 2_000_000:
+                break
+        text = b"".join(chunks).decode("utf-8", errors="ignore")
+        text = re.sub(r"<[^>]+>", " ", text).lower()
+        kw = keyword.strip('"').lower()
+        return text.count(kw)
+    except Exception:
+        return None
+
 
 
 def fetch_one_ticker(ticker):
@@ -356,6 +389,24 @@ if run:
                 if ti.get("industry"):
                     r["Industry"] = ti["industry"]
 
+            # Parallel keyword mention count from actual filings
+            with st.spinner("Counting keyword mentions in filings..."):
+                kw_clean = keyword.strip('"')
+                def _count(r):
+                    src = r.get("_raw_src", {})
+                    adsh = src.get("adsh", "")
+                    ciks = src.get("ciks", [])
+                    cik = str(ciks[0]).lstrip("0") if ciks else ""
+                    count = fetch_mention_count(adsh, cik, kw_clean)
+                    # Fall back to highlight count if fetch fails
+                    return count if count is not None else r.get("Mentions", 0)
+
+                with ThreadPoolExecutor(max_workers=6) as ex:
+                    futures = {ex.submit(_count, r): i for i, r in enumerate(results)}
+                    for f in as_completed(futures):
+                        i = futures[f]
+                        results[i]["Mentions"] = f.result()
+
             if use_mcap:
                 results = [r for r in results if r["_mcap_raw"] is not None
                            and r["_mcap_raw"] / 1e9 >= mcap_min
@@ -390,7 +441,7 @@ if run:
 
                 df = pd.DataFrame(results)[[
                     "Company", "Ticker", "Location", "Sector", "Industry",
-                    "Market Cap", "Filing Type", "Filing Date", "Snippet", "Filing URL"
+                    "Market Cap", "Filing Type", "Filing Date", "Mentions", "Filing URL"
                 ]]
 
                 df_display = df.copy()
