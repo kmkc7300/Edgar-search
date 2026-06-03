@@ -203,6 +203,7 @@ def parse_hit(h):
         filing_url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{acc_clean}/{adsh}-index.htm"
     else:
         filing_url = "N/A"
+    edgar_page = f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={cik}&type=10-K&dateb=&owner=include&count=10" if cik else "N/A"
 
     highlight = h.get("highlight", {})
     snippet_parts = (
@@ -225,7 +226,7 @@ def parse_hit(h):
         "Mentions": mention_count,
         "CFO": "N/A",
         "Phone": "N/A",
-        "Website": "N/A",
+        "EDGAR Page": edgar_page,
         "LinkedIn": "N/A",
         "Filing URL": filing_url,
         "_mcap_raw": None,
@@ -325,12 +326,11 @@ def fetch_one_ticker(ticker):
             full = t.info
             sector = full.get("sector") or None
             industry = full.get("industry") or None
-            website = full.get("website") or ""
         except Exception:
-            sector = industry = website = None
-        return ticker, {"market_cap": mc, "sector": sector, "industry": industry, "website": website}
+            sector = industry = None
+        return ticker, {"market_cap": mc, "sector": sector, "industry": industry}
     except Exception:
-        return ticker, {"market_cap": None, "sector": None, "industry": None, "website": None}
+        return ticker, {"market_cap": None, "sector": None, "industry": None}
 
 
 def get_ticker_info(tickers):
@@ -428,8 +428,7 @@ if run:
                     r["Sector"] = ti["sector"]
                 if ti.get("industry"):
                     r["Industry"] = ti["industry"]
-                if ti.get("website"):
-                    r["Website"] = ti["website"]
+
 
             if use_mcap:
                 results = [r for r in results
@@ -476,7 +475,7 @@ if run:
                         futures = {ex.submit(_fetch, r): i for i, r in enumerate(results)}
                         for f in as_completed(futures):
                             i = futures[f]
-                            count, cfo_name, phone, website, linkedin = f.result()
+                            count, cfo_name, phone, _website, linkedin = f.result()
                             results[i]["Mentions"] = count
                             results[i]["CFO"] = cfo_name or "N/A"
                             results[i]["Phone"] = phone or "N/A"
@@ -508,12 +507,12 @@ if run:
 
                 df = pd.DataFrame(results)[[
                     "Company", "Ticker", "Location", "Sector", "Industry",
-                    "Market Cap", "CFO", "Phone", "Website", "LinkedIn",
+                    "Market Cap", "CFO", "Phone", "EDGAR Page", "LinkedIn",
                     "Filing Type", "Filing Date", "Mentions", "Filing URL"
                 ]]
 
                 df_display = df.copy()
-                for col, label in [("Filing URL", "View"), ("Website", "Visit"), ("LinkedIn", "Search")]:
+                for col, label in [("Filing URL", "View"), ("EDGAR Page", "Company"), ("LinkedIn", "Search")]:
                     df_display[col] = df_display[col].apply(
                         lambda x, l=label: f'<a href="{x}" target="_blank">{l}</a>' if x not in ("N/A", "") else "N/A"
                     )
