@@ -225,6 +225,10 @@ def parse_hit(h):
         "Filing Type": form,
         "Filing Date": filed,
         "Mentions": mention_count,
+        "CFO": "N/A",
+        "Phone": "N/A",
+        "Website": "N/A",
+        "LinkedIn": "N/A",
         "Filing URL": filing_url,
         "_mcap_raw": None,
         "Market Cap": "N/A",
@@ -406,25 +410,36 @@ if run:
                 if ti.get("industry"):
                     r["Industry"] = ti["industry"]
 
-            # Parallel keyword mention count from actual filings
-            with st.spinner("Counting keyword mentions in filings..."):
-                kw_clean = keyword.strip('"')
-                def _count(r):
+            # Parallel: fetch filing data (mentions + CFO + email) and company phone
+            with st.spinner("Fetching filing data, CFO info and contact details..."):
+                kw_clean = keyword.strip('"').strip("\'")
+
+                def _fetch(r):
                     src = r.get("_raw_src", {})
-                    # _id contains "accession:filename" — use directly
-                    edgar_id = r.get("_raw_src", {}).get("_id", "") or ""
-                    # _id is on the hit, not _source — stored separately
                     edgar_id = r.get("_edgar_id", "")
                     ciks = src.get("ciks", [])
                     cik = str(ciks[0]).lstrip("0") if ciks else ""
-                    count = fetch_mention_count(edgar_id, cik, kw_clean)
-                    return count if count is not None else r.get("Mentions", 0)
+                    count, cfo_name, _ = fetch_filing_data(edgar_id, cik, kw_clean)
+                    phone, website = fetch_company_info(ciks[0] if ciks else "")
+                    # Build LinkedIn search URL for CFO
+                    company = r.get("Company", "")
+                    if cfo_name and company:
+                        li_query = (cfo_name + " " + company).replace(" ", "+")
+                        linkedin = f"https://www.linkedin.com/search/results/people/?keywords={li_query}"
+                    else:
+                        linkedin = ""
+                    return count, cfo_name, phone, website, linkedin
 
                 with ThreadPoolExecutor(max_workers=6) as ex:
-                    futures = {ex.submit(_count, r): i for i, r in enumerate(results)}
+                    futures = {ex.submit(_fetch, r): i for i, r in enumerate(results)}
                     for f in as_completed(futures):
                         i = futures[f]
-                        results[i]["Mentions"] = f.result()
+                        count, cfo_name, phone, website, linkedin = f.result()
+                        results[i]["Mentions"] = count
+                        results[i]["CFO"] = cfo_name or "N/A"
+                        results[i]["Phone"] = phone or "N/A"
+                        results[i]["Website"] = website or "N/A"
+                        results[i]["LinkedIn"] = linkedin or "N/A"
 
             if use_mcap:
                 results = [r for r in results if r["_mcap_raw"] is not None
@@ -462,12 +477,18 @@ if run:
 
                 df = pd.DataFrame(results)[[
                     "Company", "Ticker", "Location", "Sector", "Industry",
-                    "Market Cap", "Filing Type", "Filing Date", "Mentions", "Filing URL"
+                    "Market Cap", "CFO", "Phone", "Website", "LinkedIn", "Filing Type", "Filing Date", "Mentions", "Filing URL"
                 ]]
 
                 df_display = df.copy()
                 df_display["Filing URL"] = df_display["Filing URL"].apply(
                     lambda x: f'<a href="{x}" target="_blank">View</a>' if x != "N/A" else "N/A"
+                )
+                df_display["Website"] = df_display["Website"].apply(
+                    lambda x: f'<a href="{x}" target="_blank">Visit</a>' if x != "N/A" else "N/A"
+                )
+                df_display["LinkedIn"] = df_display["LinkedIn"].apply(
+                    lambda x: f'<a href="{x}" target="_blank">Search</a>' if x != "N/A" else "N/A"
                 )
                 st.write(df_display.to_html(escape=False, index=False), unsafe_allow_html=True)
 
