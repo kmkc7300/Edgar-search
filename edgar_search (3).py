@@ -415,6 +415,7 @@ if run:
             with st.spinner("Fetching filing data, CFO info and contact details..."):
                 kw_clean = keyword.strip('"').strip("\'")
 
+                errors = []
                 def _fetch(r, _kw=kw_clean):
                     try:
                         src = r.get("_raw_src", {})
@@ -432,6 +433,7 @@ if run:
                             linkedin = ""
                         return count, cfo_name, phone, website, linkedin
                     except Exception as e:
+                        errors.append(f"{r.get('Company','?')}: {type(e).__name__}: {e}")
                         return 0, "", "", "", ""
 
                 with ThreadPoolExecutor(max_workers=6) as ex:
@@ -444,6 +446,11 @@ if run:
                         results[i]["Phone"] = phone or "N/A"
                         results[i]["Website"] = website or "N/A"
                         results[i]["LinkedIn"] = linkedin or "N/A"
+
+                if errors and debug_mode:
+                    st.warning(f"Fetch errors ({len(errors)}): {errors[0]}")
+                elif errors:
+                    st.info(f"⚠️ {len(errors)}/{len(results)} filings could not be fetched for contact data. First error: {errors[0]}")
 
             if use_mcap:
                 results = [r for r in results if r["_mcap_raw"] is not None
