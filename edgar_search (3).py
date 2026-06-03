@@ -333,7 +333,6 @@ def fetch_one_ticker(ticker):
         return ticker, {"market_cap": None, "sector": None, "industry": None, "website": None}
 
 
-@lru_cache(maxsize=256)
 def get_ticker_info(tickers):
     info = {}
     with ThreadPoolExecutor(max_workers=8) as ex:
