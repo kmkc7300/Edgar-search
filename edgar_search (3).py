@@ -325,11 +325,12 @@ def fetch_one_ticker(ticker):
             full = t.info
             sector = full.get("sector") or None
             industry = full.get("industry") or None
+            website = full.get("website") or ""
         except Exception:
-            sector = industry = None
-        return ticker, {"market_cap": mc, "sector": sector, "industry": industry}
+            sector = industry = website = None
+        return ticker, {"market_cap": mc, "sector": sector, "industry": industry, "website": website}
     except Exception:
-        return ticker, {"market_cap": None, "sector": None, "industry": None}
+        return ticker, {"market_cap": None, "sector": None, "industry": None, "website": None}
 
 
 @lru_cache(maxsize=256)
@@ -428,6 +429,8 @@ if run:
                     r["Sector"] = ti["sector"]
                 if ti.get("industry"):
                     r["Industry"] = ti["industry"]
+                if ti.get("website"):
+                    r["Website"] = ti["website"]
 
             if use_mcap:
                 results = [r for r in results
