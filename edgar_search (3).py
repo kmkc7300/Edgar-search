@@ -6,6 +6,7 @@ from datetime import date, timedelta
 import time
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import lru_cache
 import io
 
 st.set_page_config(page_title="EDGAR Filing Search", layout="wide")
@@ -306,7 +307,7 @@ def fetch_one_ticker(ticker):
         return ticker, {"market_cap": None, "sector": None, "industry": None}
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@lru_cache(maxsize=256)
 def get_ticker_info(tickers: tuple):
     info = {}
     with ThreadPoolExecutor(max_workers=8) as ex:
@@ -419,9 +420,10 @@ if run:
                         src = r.get("_raw_src", {})
                         edgar_id = r.get("_edgar_id", "")
                         ciks = src.get("ciks", [])
-                        cik = str(ciks[0]).lstrip("0") if ciks else ""
-                        count, cfo_name, _ = fetch_filing_data(edgar_id, cik, _kw)
-                        phone, website = fetch_company_info(ciks[0] if ciks else "")
+                        cik_clean = str(ciks[0]).lstrip("0") if ciks else ""
+                        cik_raw = str(ciks[0]) if ciks else ""
+                        count, cfo_name, _ = fetch_filing_data(edgar_id, cik_clean, _kw)
+                        phone, website = fetch_company_info(cik_raw)
                         company = r.get("Company", "")
                         if cfo_name and company:
                             li_query = (cfo_name + " " + company).replace(" ", "+")
@@ -429,7 +431,7 @@ if run:
                         else:
                             linkedin = ""
                         return count, cfo_name, phone, website, linkedin
-                    except Exception:
+                    except Exception as e:
                         return 0, "", "", "", ""
 
                 with ThreadPoolExecutor(max_workers=6) as ex:
