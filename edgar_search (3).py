@@ -11,7 +11,7 @@ import io
 
 st.set_page_config(page_title="EDGAR Filing Search", layout="wide")
 st.title("EDGAR Filing Keyword Search")
-st.caption("Paginates through SEC EDGAR • SIC-based instant sector classification • Parallel market cap fetching")
+st.caption("Paginates through SEC EDGAR • SIC-based sector classification • Parallel market cap fetching • CFO contact info")
 
 # ── SIC → Sector/Industry ──────────────────────────────────────────────────────
 SIC_MAP = [
@@ -19,7 +19,6 @@ SIC_MAP = [
     (range(1000,  1040),  "Basic Materials",       "Metal Mining"),
     (range(1040,  1090),  "Basic Materials",       "Gold Mining"),
     (range(1090,  1100),  "Basic Materials",       "Silver & Other Mining"),
-    (range(1094,  1095),  "Basic Materials",       "Uranium Mining"),
     (range(1200,  1300),  "Energy",                "Coal Mining"),
     (range(1311,  1382),  "Energy",                "Crude Petroleum & Natural Gas"),
     (range(1382,  1390),  "Energy",                "Oil & Gas Field Services"),
@@ -103,8 +102,7 @@ with st.sidebar:
     with col2:
         date_to = st.date_input("To", value=date.today())
 
-    st.markdown("---")
-    max_pages = 10  # always max
+    max_pages = 10
     dedup = True
     listed_only = True
 
@@ -128,12 +126,13 @@ with st.sidebar:
     industry_exc = st.text_input("Exclude ", placeholder="Gold")
 
     st.markdown("---")
-    sort_by = st.selectbox("Sort by", ["Mentions ↓", "Market Cap ↓", "Market Cap ↑", "Filing Date ↓", "Company A–Z"])
+    sort_by = st.selectbox("Sort by", ["Mentions ↓", "Market Cap ↓", "Market Cap ↑", "Filing Date ↓", "Company A-Z"])
     debug_mode = st.checkbox("Debug mode")
     run = st.button("Search", type="primary", use_container_width=True)
 
 
-# ── Helpers ────────────────────────────────────────────────────────────────────
+# ── Helper functions ───────────────────────────────────────────────────────────
+
 def parse_display_names(display_names):
     parsed = []
     for entry in display_names:
@@ -209,11 +208,9 @@ def parse_hit(h):
     snippet_parts = (
         highlight.get("file_contents") or
         highlight.get("period_of_report") or
-        highlight.get("entity_name") or
         []
     )
-    # Use highlight fragment count as lower-bound mention estimate
-    mention_count = len(snippet_parts) if snippet_parts else 0
+    mention_count = len(snippet_parts)
 
     location = (src.get("biz_locations") or [""])[0]
 
@@ -235,43 +232,50 @@ def parse_hit(h):
         "Market Cap": "N/A",
         "_raw_src": src,
         "_edgar_id": h.get("_id", ""),
+        "_ciks": ciks,
     }
 
 
-def fetch_mention_count(edgar_id, cik, keyword, timeout=10):
-    """
-    Fetch filing text and count exact keyword occurrences.
-    edgar_id format: "0001683168-26-001886:lifeway_i10k-123125.htm"
-    """
+# ── Contact data functions ─────────────────────────────────────────────────────
+
+def extract_cfo_name(text_clean):
+    patterns = [
+        r'/[Ss]/\s+([A-Z][a-zA-Z\-]+(?: [A-Z]\.?)? [A-Z][a-zA-Z\-]+).{0,400}?Chief Financial Officer',
+        r'([A-Z][a-zA-Z\-]+(?: [A-Z]\.?)? [A-Z][a-zA-Z\-]+)\s{0,10}Chief Financial Officer',
+        r'Chief Financial Officer.{0,200}?([A-Z][a-zA-Z\-]+(?: [A-Z]\.?)? [A-Z][a-zA-Z\-]+)',
+        r'([A-Z][a-zA-Z\-]+(?: [A-Z]\.?)? [A-Z][a-zA-Z\-]+),\s*Chief Financial Officer',
+    ]
+    for pat in patterns:
+        m = re.search(pat, text_clean, re.DOTALL)
+        if m:
+            name = m.group(1).strip()
+            if 5 < len(name) < 60:
+                return name
+    return ""
+
+
+def fetch_filing_data(edgar_id, cik, keyword, timeout=12):
+    """Fetch filing document — returns (mention_count, cfo_name)."""
     try:
         if not edgar_id or not cik:
-            return None
-        # Extract accession and filename from EDGAR _id field
+            return 0, ""
         if ":" in edgar_id:
             adsh, filename = edgar_id.split(":", 1)
         else:
-            adsh = edgar_id
-            filename = None
+            return 0, ""
 
         acc_clean = adsh.replace("-", "")
+        doc_url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{acc_clean}/{filename}"
 
-        if filename:
-            doc_url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{acc_clean}/{filename}"
-        else:
-            index_url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{acc_clean}/{adsh}-index.htm"
-            r = requests.get(index_url, headers={"User-Agent": "KiloCapital research@kilocapital.com"}, timeout=timeout)
-            if not r.ok:
-                return None
-            links = re.findall(r'href="(/Archives/edgar/data/[^"]+\.htm)"', r.text, re.IGNORECASE)
-            doc_links = [l for l in links if not l.endswith("-index.htm")]
-            if not doc_links:
-                return None
-            doc_url = "https://www.sec.gov" + doc_links[0]
-
-        dr = requests.get(doc_url, headers={"User-Agent": "KiloCapital research@kilocapital.com"}, timeout=timeout, stream=True)
+        dr = requests.get(
+            doc_url,
+            headers={"User-Agent": "KiloCapital research@kilocapital.com"},
+            timeout=timeout,
+            stream=True,
+        )
         if not dr.ok:
-            return None
-        # Read up to 5MB
+            return 0, ""
+
         chunks = []
         size = 0
         for chunk in dr.iter_content(chunk_size=65536):
@@ -279,17 +283,38 @@ def fetch_mention_count(edgar_id, cik, keyword, timeout=10):
             size += len(chunk)
             if size > 5_000_000:
                 break
-        raw = b"".join(chunks).decode("utf-8", errors="ignore")
-        # Strip HTML tags, replace with space to avoid joining words
-        text = re.sub(r"<[^>]+>", " ", raw)
-        # Normalize all whitespace (tabs, newlines, multiple spaces) to single space
-        text = " ".join(text.split()).lower()
-        # Clean keyword — strip surrounding quotes, lowercase
-        kw = keyword.strip().strip('"').strip("'").lower()
-        return text.count(kw)
-    except Exception:
-        return None
 
+        raw = b"".join(chunks).decode("utf-8", errors="ignore")
+        text_clean = " ".join(re.sub(r"<[^>]+>", " ", raw).split())
+        text_lower = text_clean.lower()
+        kw = keyword.strip().strip('"').strip("'").lower()
+        count = text_lower.count(kw)
+        cfo_name = extract_cfo_name(text_clean)
+        return count, cfo_name
+    except Exception:
+        return 0, ""
+
+
+def fetch_company_contact(cik_raw, timeout=8):
+    """Fetch phone and website from EDGAR Submissions API."""
+    try:
+        cik_padded = str(cik_raw).lstrip("0").zfill(10)
+        url = f"https://data.sec.gov/submissions/CIK{cik_padded}.json"
+        r = requests.get(
+            url,
+            headers={"User-Agent": "KiloCapital research@kilocapital.com"},
+            timeout=timeout,
+        )
+        if not r.ok:
+            return "", ""
+        data = r.json()
+        phone = data.get("phone", "") or ""
+        website = data.get("website", "") or ""
+        if website and not website.startswith("http"):
+            website = "https://" + website
+        return phone, website
+    except Exception:
+        return "", ""
 
 
 def fetch_one_ticker(ticker):
@@ -308,7 +333,7 @@ def fetch_one_ticker(ticker):
 
 
 @lru_cache(maxsize=256)
-def get_ticker_info(tickers: tuple):
+def get_ticker_info(tickers):
     info = {}
     with ThreadPoolExecutor(max_workers=8) as ex:
         futures = {ex.submit(fetch_one_ticker, t): t for t in tickers}
@@ -349,29 +374,23 @@ if run:
         progress = st.progress(0, text="Fetching page 1...")
 
         for page in range(max_pages):
-            # Stop early if we've already fetched everything available
             if total_available is not None and len(all_hits) >= total_available:
                 break
-
-            progress.progress((page) / max_pages, text=f"Fetching page {page+1} of {max_pages}...")
+            progress.progress(page / max_pages, text=f"Fetching page {page+1} of {max_pages}...")
             data = fetch_page(q, filing_type, date_from, date_to, page)
-
             if "error" in data:
-                st.warning(f"EDGAR stopped at page {page+1} — fetched {len(all_hits)} filings total.")
+                st.warning(f"EDGAR stopped at page {page+1} — fetched {len(all_hits)} filings.")
                 break
-
             hits = data.get("hits", {}).get("hits", [])
             if total_available is None:
                 total_available = data.get("hits", {}).get("total", {}).get("value", 0)
-
             all_hits.extend(hits)
-
             if len(hits) < 100:
-                break  # no more pages
+                break
+            time.sleep(0.3)
 
-            time.sleep(0.3)  # be polite to SEC
-
-        progress.progress(1.0, text=f"Done — fetched {len(all_hits)} filings from EDGAR (total available: {total_available:,})" if total_available is not None else f"Done — fetched {len(all_hits)} filings from EDGAR")
+        total_str = f"{total_available:,}" if total_available is not None else "?"
+        progress.progress(1.0, text=f"Done — fetched {len(all_hits)} filings (total available: {total_str})")
 
         if debug_mode and all_hits:
             st.subheader("First raw hit")
@@ -394,7 +413,6 @@ if run:
                 results = list(seen.values())
 
             tickers = tuple(set(r["Ticker"] for r in results if r["Ticker"]))
-
             if tickers:
                 with st.spinner(f"Fetching market data for {len(tickers)} companies..."):
                     ticker_info = get_ticker_info(tickers)
@@ -411,49 +429,9 @@ if run:
                 if ti.get("industry"):
                     r["Industry"] = ti["industry"]
 
-            # Parallel: fetch filing data (mentions + CFO + email) and company phone
-            with st.spinner("Fetching filing data, CFO info and contact details..."):
-                kw_clean = keyword.strip('"').strip("\'")
-
-                errors = []
-                def _fetch(r, _kw=kw_clean):
-                    try:
-                        src = r.get("_raw_src", {})
-                        edgar_id = r.get("_edgar_id", "")
-                        ciks = src.get("ciks", [])
-                        cik_clean = str(ciks[0]).lstrip("0") if ciks else ""
-                        cik_raw = str(ciks[0]) if ciks else ""
-                        count, cfo_name, _ = fetch_filing_data(edgar_id, cik_clean, _kw)
-                        phone, website = fetch_company_info(cik_raw)
-                        company = r.get("Company", "")
-                        if cfo_name and company:
-                            li_query = (cfo_name + " " + company).replace(" ", "+")
-                            linkedin = f"https://www.linkedin.com/search/results/people/?keywords={li_query}"
-                        else:
-                            linkedin = ""
-                        return count, cfo_name, phone, website, linkedin
-                    except Exception as e:
-                        errors.append(f"{r.get('Company','?')}: {type(e).__name__}: {e}")
-                        return 0, "", "", "", ""
-
-                with ThreadPoolExecutor(max_workers=6) as ex:
-                    futures = {ex.submit(_fetch, r): i for i, r in enumerate(results)}
-                    for f in as_completed(futures):
-                        i = futures[f]
-                        count, cfo_name, phone, website, linkedin = f.result()
-                        results[i]["Mentions"] = count
-                        results[i]["CFO"] = cfo_name or "N/A"
-                        results[i]["Phone"] = phone or "N/A"
-                        results[i]["Website"] = website or "N/A"
-                        results[i]["LinkedIn"] = linkedin or "N/A"
-
-                if errors and debug_mode:
-                    st.warning(f"Fetch errors ({len(errors)}): {errors[0]}")
-                elif errors:
-                    st.info(f"⚠️ {len(errors)}/{len(results)} filings could not be fetched for contact data. First error: {errors[0]}")
-
             if use_mcap:
-                results = [r for r in results if r["_mcap_raw"] is not None
+                results = [r for r in results
+                           if r["_mcap_raw"] is not None
                            and r["_mcap_raw"] / 1e9 >= mcap_min
                            and r["_mcap_raw"] / 1e9 <= mcap_max]
             if sector_inc.strip():
@@ -465,20 +443,60 @@ if run:
             if industry_exc.strip():
                 results = [r for r in results if industry_exc.lower() not in r["Industry"].lower()]
 
-            if sort_by == "Mentions ↓":
-                results.sort(key=lambda x: x.get("Mentions") or 0, reverse=True)
-            elif sort_by == "Market Cap ↓":
-                results.sort(key=lambda x: x["_mcap_raw"] or 0, reverse=True)
-            elif sort_by == "Market Cap ↑":
-                results.sort(key=lambda x: x["_mcap_raw"] or float("inf"))
-            elif sort_by == "Filing Date ↓":
-                results.sort(key=lambda x: x["Filing Date"], reverse=True)
-            elif sort_by == "Company A–Z":
-                results.sort(key=lambda x: x["Company"])
-
             if not results:
                 st.info("No results match your filters.")
             else:
+                # Fetch filing data + contact info in parallel
+                errors = []
+                kw_clean = keyword.strip().strip('"').strip("'")
+
+                def _fetch(r):
+                    try:
+                        edgar_id = r.get("_edgar_id", "")
+                        ciks = r.get("_ciks", [])
+                        cik_clean = str(ciks[0]).lstrip("0") if ciks else ""
+                        cik_raw = str(ciks[0]) if ciks else ""
+                        count, cfo_name = fetch_filing_data(edgar_id, cik_clean, kw_clean)
+                        phone, website = fetch_company_contact(cik_raw)
+                        company = r.get("Company", "")
+                        if cfo_name and company:
+                            li_query = (cfo_name + " " + company).replace(" ", "+")
+                            linkedin = f"https://www.linkedin.com/search/results/people/?keywords={li_query}"
+                        else:
+                            linkedin = ""
+                        return count, cfo_name, phone, website, linkedin
+                    except Exception as e:
+                        errors.append(f"{r.get('Company','?')}: {type(e).__name__}: {e}")
+                        return 0, "", "", "", ""
+
+                with st.spinner(f"Fetching filing data and contact info for {len(results)} companies..."):
+                    with ThreadPoolExecutor(max_workers=6) as ex:
+                        futures = {ex.submit(_fetch, r): i for i, r in enumerate(results)}
+                        for f in as_completed(futures):
+                            i = futures[f]
+                            count, cfo_name, phone, website, linkedin = f.result()
+                            results[i]["Mentions"] = count
+                            results[i]["CFO"] = cfo_name or "N/A"
+                            results[i]["Phone"] = phone or "N/A"
+                            results[i]["Website"] = website or "N/A"
+                            results[i]["LinkedIn"] = linkedin or "N/A"
+
+                if errors:
+                    st.info(f"Note: {len(errors)}/{len(results)} filing fetches failed. First error: {errors[0]}")
+
+                # Sort
+                if sort_by == "Mentions ↓":
+                    results.sort(key=lambda x: x.get("Mentions") or 0, reverse=True)
+                elif sort_by == "Market Cap ↓":
+                    results.sort(key=lambda x: x["_mcap_raw"] or 0, reverse=True)
+                elif sort_by == "Market Cap ↑":
+                    results.sort(key=lambda x: x["_mcap_raw"] or float("inf"))
+                elif sort_by == "Filing Date ↓":
+                    results.sort(key=lambda x: x["Filing Date"], reverse=True)
+                elif sort_by == "Company A-Z":
+                    results.sort(key=lambda x: x["Company"])
+
+                # Metrics
                 valid_caps = [r["_mcap_raw"] for r in results if r["_mcap_raw"]]
                 m1, m2, m3, m4 = st.columns(4)
                 m1.metric("Results", len(results))
@@ -488,19 +506,16 @@ if run:
 
                 df = pd.DataFrame(results)[[
                     "Company", "Ticker", "Location", "Sector", "Industry",
-                    "Market Cap", "CFO", "Phone", "Website", "LinkedIn", "Filing Type", "Filing Date", "Mentions", "Filing URL"
+                    "Market Cap", "CFO", "Phone", "Website", "LinkedIn",
+                    "Filing Type", "Filing Date", "Mentions", "Filing URL"
                 ]]
 
                 df_display = df.copy()
-                df_display["Filing URL"] = df_display["Filing URL"].apply(
-                    lambda x: f'<a href="{x}" target="_blank">View</a>' if x != "N/A" else "N/A"
-                )
-                df_display["Website"] = df_display["Website"].apply(
-                    lambda x: f'<a href="{x}" target="_blank">Visit</a>' if x != "N/A" else "N/A"
-                )
-                df_display["LinkedIn"] = df_display["LinkedIn"].apply(
-                    lambda x: f'<a href="{x}" target="_blank">Search</a>' if x != "N/A" else "N/A"
-                )
+                for col, label in [("Filing URL", "View"), ("Website", "Visit"), ("LinkedIn", "Search")]:
+                    df_display[col] = df_display[col].apply(
+                        lambda x, l=label: f'<a href="{x}" target="_blank">{l}</a>' if x not in ("N/A", "") else "N/A"
+                    )
+
                 st.write(df_display.to_html(escape=False, index=False), unsafe_allow_html=True)
 
                 c1, c2 = st.columns(2)
