@@ -103,10 +103,9 @@ with st.sidebar:
         date_to = st.date_input("To", value=date.today())
 
     st.markdown("---")
-    max_pages = st.slider("Pages to fetch (100 results/page)", 1, 10, 3)
-    st.caption(f"Will fetch up to {max_pages * 100} filings from EDGAR")
-    dedup = st.checkbox("One result per company", value=True)
-    listed_only = st.checkbox("Listed companies only", value=True)
+    max_pages = 10  # always max
+    dedup = True
+    listed_only = True
 
     st.markdown("---")
     st.subheader("Market Cap")
