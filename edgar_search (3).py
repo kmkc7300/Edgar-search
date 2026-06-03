@@ -1,4 +1,3 @@
-
 import streamlit as st
 import requests
 import yfinance as yf
@@ -231,38 +230,56 @@ def parse_hit(h):
         "_mcap_raw": None,
         "Market Cap": "N/A",
         "_raw_src": src,
+        "_edgar_id": h.get("_id", ""),
     }
 
 
-def fetch_mention_count(adsh, cik, keyword, timeout=8):
-    """Fetch filing text and count exact keyword occurrences."""
+def fetch_mention_count(edgar_id, cik, keyword, timeout=10):
+    """
+    Fetch filing text and count exact keyword occurrences.
+    edgar_id format: "0001683168-26-001886:lifeway_i10k-123125.htm"
+    """
     try:
-        if not adsh or not cik:
+        if not edgar_id or not cik:
             return None
+        # Extract accession and filename from EDGAR _id field
+        if ":" in edgar_id:
+            adsh, filename = edgar_id.split(":", 1)
+        else:
+            adsh = edgar_id
+            filename = None
+
         acc_clean = adsh.replace("-", "")
-        index_url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{acc_clean}/{adsh}-index.htm"
-        r = requests.get(index_url, headers={"User-Agent": "KiloCapital research@kilocapital.com"}, timeout=timeout)
-        if not r.ok:
-            return None
-        # Find primary document (not exhibits)
-        links = re.findall(r'href="(/Archives/edgar/data/[^"]+\.htm)"', r.text, re.IGNORECASE)
-        doc_links = [l for l in links if not l.endswith("-index.htm")]
-        if not doc_links:
-            return None
-        doc_url = "https://www.sec.gov" + doc_links[0]
+
+        if filename:
+            # Direct document URL — most reliable
+            doc_url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{acc_clean}/{filename}"
+        else:
+            # Fall back to index page parsing
+            index_url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{acc_clean}/{adsh}-index.htm"
+            r = requests.get(index_url, headers={"User-Agent": "KiloCapital research@kilocapital.com"}, timeout=timeout)
+            if not r.ok:
+                return None
+            links = re.findall(r'href="(/Archives/edgar/data/[^"]+\.htm)"', r.text, re.IGNORECASE)
+            doc_links = [l for l in links if not l.endswith("-index.htm")]
+            if not doc_links:
+                return None
+            doc_url = "https://www.sec.gov" + doc_links[0]
+
         dr = requests.get(doc_url, headers={"User-Agent": "KiloCapital research@kilocapital.com"}, timeout=timeout, stream=True)
         if not dr.ok:
             return None
-        # Read up to 2MB to keep it fast
+        # Read up to 3MB
         chunks = []
         size = 0
         for chunk in dr.iter_content(chunk_size=65536):
             chunks.append(chunk)
             size += len(chunk)
-            if size > 2_000_000:
+            if size > 3_000_000:
                 break
         text = b"".join(chunks).decode("utf-8", errors="ignore")
         text = re.sub(r"<[^>]+>", " ", text).lower()
+        text = re.sub(r"\s+", " ", text)
         kw = keyword.strip('"').lower()
         return text.count(kw)
     except Exception:
@@ -394,11 +411,13 @@ if run:
                 kw_clean = keyword.strip('"')
                 def _count(r):
                     src = r.get("_raw_src", {})
-                    adsh = src.get("adsh", "")
+                    # _id contains "accession:filename" — use directly
+                    edgar_id = r.get("_raw_src", {}).get("_id", "") or ""
+                    # _id is on the hit, not _source — stored separately
+                    edgar_id = r.get("_edgar_id", "")
                     ciks = src.get("ciks", [])
                     cik = str(ciks[0]).lstrip("0") if ciks else ""
-                    count = fetch_mention_count(adsh, cik, kw_clean)
-                    # Fall back to highlight count if fetch fails
+                    count = fetch_mention_count(edgar_id, cik, kw_clean)
                     return count if count is not None else r.get("Mentions", 0)
 
                 with ThreadPoolExecutor(max_workers=6) as ex:
