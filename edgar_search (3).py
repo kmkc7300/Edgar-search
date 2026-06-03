@@ -128,7 +128,7 @@ with st.sidebar:
     industry_exc = st.text_input("Exclude ", placeholder="Gold")
 
     st.markdown("---")
-    sort_by = st.selectbox("Sort by", ["Market Cap ↓", "Market Cap ↑", "Filing Date ↓", "Company A–Z"])
+    sort_by = st.selectbox("Sort by", ["Mentions ↓", "Market Cap ↓", "Market Cap ↑", "Filing Date ↓", "Company A–Z"])
     debug_mode = st.checkbox("Debug mode")
     run = st.button("Search", type="primary", use_container_width=True)
 
@@ -439,7 +439,9 @@ if run:
             if industry_exc.strip():
                 results = [r for r in results if industry_exc.lower() not in r["Industry"].lower()]
 
-            if sort_by == "Market Cap ↓":
+            if sort_by == "Mentions ↓":
+                results.sort(key=lambda x: x.get("Mentions") or 0, reverse=True)
+            elif sort_by == "Market Cap ↓":
                 results.sort(key=lambda x: x["_mcap_raw"] or 0, reverse=True)
             elif sort_by == "Market Cap ↑":
                 results.sort(key=lambda x: x["_mcap_raw"] or float("inf"))
