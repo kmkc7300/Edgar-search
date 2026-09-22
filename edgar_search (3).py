@@ -137,16 +137,6 @@ SIC_MAP = [
     (range(9000, 9999), "Government", "Public Administration"),
 ]
 
-# SIC codes where a physical-metals inventory facility is plausible.
-METALS_SIC = set()
-for _lo, _hi in [
-    (1000, 1100), (1400, 1500), (2810, 2900), (3300, 3400),
-    (3400, 3500), (3600, 3700), (3910, 3920), (5050, 5052),
-    (5052, 5053), (5093, 5094), (5094, 5095),
-]:
-    METALS_SIC.update(range(_lo, _hi))
-
-
 def sic_lookup(sic_code) -> tuple[str, str]:
     """Return (sector, industry) for a SIC code, narrowest range wins."""
     if not sic_code:
@@ -358,7 +348,6 @@ def collect(term_results: dict[str, dict]) -> tuple[dict, list[dict]]:
                 "Sector": sector,
                 "Industry": industry,
                 "SIC": str(sic) if sic else "",
-                "Metals-adjacent": bool(sic and str(sic).isdigit() and int(sic) in METALS_SIC),
                 "Docs": 0,
                 "Filings": set(),
                 "Latest filing": "",
@@ -584,13 +573,6 @@ def to_excel(df: pd.DataFrame) -> bytes:
     return buf.getvalue()
 
 
-US_STATES = [
-    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "DC", "FL", "GA", "HI", "ID",
-    "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS", "MO",
-    "MT", "NE", "NV", "NH", "NJ", "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA",
-    "RI", "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY",
-]
-
 DATE_PRESETS = {
     "Last 90 days": 90,
     "Last 12 months": 365,
@@ -608,34 +590,13 @@ st.caption(
     "public-float tag; filing scans run only when you ask for them."
 )
 
-PRESETS = {
-    "Copper inventory": '"copper cathode"\n"copper concentrate"\n"copper scrap"',
-    "Already borrowing on inventory": '"borrowing base"\n"raw materials inventory"',
-    "Tolling and refining": '"toll processing"\n"tolling agreement"\n"refining agreement"',
-    "Consignment and leased metal": '"consignment inventory"\n"precious metals lease"\n"metal consignment"',
-    "Distress signals": '"going concern"\n"forbearance agreement"\n"covenant default"',
-    "Blank": "",
-}
-
-
-def _apply_preset():
-    text = PRESETS.get(st.session_state.get("preset_choice"))
-    if text is not None:
-        st.session_state["terms_text"] = text
-
-
 with st.sidebar:
     st.subheader("Search")
-
-    st.session_state.setdefault("terms_text", PRESETS["Copper inventory"])
-    st.selectbox("Saved screens", list(PRESETS), key="preset_choice",
-                 on_change=_apply_preset,
-                 help="Loads a set of terms into the box below. Edit them before searching.")
 
     with st.form("search_form"):
         terms_raw = st.text_area(
             "Search terms — one per line",
-            key="terms_text",
+            value='"copper cathode"\n"copper concentrate"',
             height=110,
             help="EDGAR has no OR operator, so each line runs as its own query and the "
                  "results are merged here. Quote a phrase to require adjacent words.",
@@ -654,7 +615,6 @@ with st.sidebar:
         c1, c2 = st.columns(2)
         custom_from = c1.date_input("From", value=date.today() - timedelta(days=365))
         custom_to = c2.date_input("To", value=date.today())
-        states = st.multiselect("Headquartered in", US_STATES, default=[])
         slice_years = st.checkbox(
             "Split by calendar year", value=True,
             help="EDGAR refuses to page past 10,000 results. Splitting the range gives "
@@ -694,7 +654,7 @@ if submitted:
 
         for i, (term, (w_start, w_end)) in enumerate(jobs, start=1):
             bar.progress((i - 1) / len(jobs), text=f"Querying EDGAR — {term} ({w_start[:4]})")
-            res = efts_search(term, tuple(forms), w_start, w_end, tuple(states), max_pages)
+            res = efts_search(term, tuple(forms), w_start, w_end, (), max_pages)
             if res["error"]:
                 problems.append(f"{term} ({w_start[:4]}): {res['error']}")
             term_results[term]["hits"].extend(res["hits"])
@@ -797,24 +757,24 @@ with st.expander("Filters", expanded=True):
     size_min = f1.number_input("Min size ($M)", min_value=0.0, value=0.0, step=25.0)
     size_max = f2.number_input("Max size ($M)", min_value=0.0, value=1000.0, step=25.0)
     sectors = f3.multiselect("Sector", sorted(df["Sector"].unique()))
-    state_filter = f4.multiselect("State", sorted(x for x in df["State"].unique() if x))
+    term_filter = f4.multiselect("Matched term", list(terms),
+                                 help="Narrow to companies whose filings matched "
+                                      "particular terms.")
 
-    g1, g2, g3, g4 = st.columns([1.2, 1.2, 1.2, 1.4])
+    g1, g2, g3 = st.columns([1.3, 1.3, 1.6])
     keep_unknown = g1.checkbox("Keep unknown size", value=True,
                                help="Companies with no public-float tag. Turning this off "
                                     "silently drops most small filers.")
-    metals_only = g2.checkbox("Metals-adjacent SIC only", value=False)
-    min_docs = g3.number_input("Min matching documents", min_value=1, value=1, step=1)
-    sort_by = g4.selectbox("Sort by", ["Matching documents", "Size (low to high)",
+    min_docs = g2.number_input("Min matching documents", min_value=1, value=1, step=1)
+    sort_by = g3.selectbox("Sort by", ["Matching documents", "Size (low to high)",
                                        "Size (high to low)", "Latest filing", "Company"])
 
 view = df.copy()
 if sectors:
     view = view[view["Sector"].isin(sectors)]
-if state_filter:
-    view = view[view["State"].isin(state_filter)]
-if metals_only:
-    view = view[view["Metals-adjacent"]]
+if term_filter:
+    view = view[view["Terms"].apply(
+        lambda s: any(t in s.split(", ") for t in term_filter))]
 view = view[view["Docs"] >= min_docs]
 
 view["Size"] = pd.to_numeric(view["Size"], errors="coerce")
@@ -836,13 +796,12 @@ view = view.sort_values(col, ascending=asc, na_position="last")
 
 # ── headline numbers ─────────────────────────────────────────────────────────
 
-m1, m2, m3, m4, m5 = st.columns(5)
+m1, m2, m3, m4 = st.columns(4)
 m1.metric("Companies", f"{len(view):,}", delta=f"{len(view) - len(df):,}" if len(view) != len(df) else None)
 m2.metric("Matching documents", f"{int(view['Docs'].sum()):,}")
 m3.metric("With size data", f"{int(view['Size'].notna().sum()):,}")
 sized = view["Size"].dropna()
 m4.metric("Median size", fmt_usd(sized.median()) if len(sized) else "—")
-m5.metric("Metals-adjacent", f"{int(view['Metals-adjacent'].sum()):,}")
 
 # ── staged enrichment ────────────────────────────────────────────────────────
 
@@ -905,7 +864,7 @@ with tab_co:
         else (f"Float {r['Float date']}" if pd.notna(r["Float"]) else ""), axis=1)
 
     cols = ["Company", "Ticker", "Location", "Industry", "Size ($M)", "Size basis",
-            "Docs", "Filings", "Latest filing", "Terms", "Metals-adjacent"]
+            "Docs", "Filings", "Latest filing", "Terms"]
     if display["Phone"].any():
         cols += ["Phone"]
     if display["CFO"].any():
@@ -924,14 +883,13 @@ with tab_co:
             "Size ($M)": st.column_config.NumberColumn(format="%.0f"),
             "Docs": st.column_config.NumberColumn("Docs", help="Indexed documents matching your terms"),
             "Mentions": st.column_config.NumberColumn(format="%d"),
-            "Metals-adjacent": st.column_config.CheckboxColumn("Metals SIC"),
             "Filing": st.column_config.LinkColumn("Filing", display_text="Open"),
             "EDGAR": st.column_config.LinkColumn("EDGAR", display_text="History"),
             "LinkedIn": st.column_config.LinkColumn("LinkedIn", display_text="Find"),
         },
     )
 
-    export = display[[c for c in cols if c not in ("Metals-adjacent",)]].copy()
+    export = display[cols].copy()
     d1, d2 = st.columns(2)
     stem = re.sub(r"\W+", "_", terms[0] if terms else "edgar")[:30]
     d1.download_button("Download CSV", export.to_csv(index=False).encode("utf-8"),
@@ -958,13 +916,8 @@ with tab_filings:
         )
 
 with tab_mix:
-    c1, c2 = st.columns(2)
-    with c1:
-        st.caption("Companies by sector")
-        st.bar_chart(view["Sector"].value_counts(), horizontal=True)
-    with c2:
-        st.caption("Companies by state")
-        st.bar_chart(view["State"].replace("", "Unknown").value_counts().head(15), horizontal=True)
+    st.caption("Companies by sector")
+    st.bar_chart(view["Sector"].value_counts(), horizontal=True)
 
     st.caption("Total documents EDGAR reports per term, before any filtering")
     st.dataframe(
